@@ -1,0 +1,88 @@
+name: Docker CI/CD
+
+on:
+  push:
+    branches: [ main ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main ]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+      
+      - name: Build Docker image
+        run: |
+          docker build -t flask-app:test .
+      
+      - name: Run container for testing
+        run: |
+          docker run -d -p 5000:5000 --name test-app flask-app:test
+          sleep 5
+      
+      - name: Test endpoints
+        run: |
+          curl -f http://localhost:5000/ || exit 1
+          curl -f http://localhost:5000/health || exit 1
+          echo "✅ All tests passed!"
+      
+      - name: Show container logs
+        if: always()
+        run: docker logs test-app
+      
+      - name: Stop container
+        if: always()
+        run: docker stop test-app
+
+  push-to-registry:
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    permissions:
+      contents: read
+      packages: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Log in to Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v4
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+      
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+      
+      - name: Image digest
+        run: echo ${{ steps.meta.outputs.digest }}
